@@ -5,8 +5,8 @@ A classic ASCII dungeon-crawler roguelike written in Go, built by following the 
 ## Features (in progress)
 
 - [x] Part 1 — Graphics & movement
-- [ ] Part 2 — Object system & map
-- [ ] Part 3 — Dungeon generator
+- [x] Part 2 — Object system & map
+- [x] Part 3 — Dungeon generator (In orogress)
 - [ ] Part 4 — Field of view & fog of war
 - [ ] Part 5 — Preparing for combat
 - [ ] Part 6 — Combat
