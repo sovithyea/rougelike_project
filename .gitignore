@@ -1,0 +1,21 @@
+# Compiled binary
+roguelike
+
+# Go build cache
+/vendor/
+
+# Test binary
+*.test
+
+# Output of go coverage tool
+*.out
+
+# Dependency directories (use go mod)
+# go.sum is intentionally tracked
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
