@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"math"
 	"math/rand"
 
 	"github.com/gdamore/tcell/v2"
@@ -22,46 +23,86 @@ const (
 	MaxRooms    = 30
 )
 
-// Tile colours
+// FOV parameters
+const TorchRadius = 10
+
+// Colours: dark (outside FOV) and light (inside FOV)
 var (
-	colorDarkWall   = tcell.NewRGBColor(0, 0, 100)
-	colorDarkGround = tcell.NewRGBColor(50, 50, 150)
+	colorDarkWall    = tcell.NewRGBColor(0, 0, 100)
+	colorLightWall   = tcell.NewRGBColor(130, 110, 50)
+	colorDarkGround  = tcell.NewRGBColor(50, 50, 150)
+	colorLightGround = tcell.NewRGBColor(200, 180, 50)
 )
 
+// -----------------------------------------------------------------------
 // Tile
+// -----------------------------------------------------------------------
 
 type Tile struct {
 	Blocked    bool
 	BlockSight bool
+	Explored   bool
 }
 
-func emptyTile() Tile { return Tile{false, false} }
-func wallTile() Tile  { return Tile{true, true} }
+func emptyTile() Tile { return Tile{Blocked: false, BlockSight: false, Explored: false} }
+func wallTile() Tile  { return Tile{Blocked: true, BlockSight: true, Explored: false} }
 
-// Rect  (a rectangular room)
+// -----------------------------------------------------------------------
+// FOV  (ray-casting)
+// -----------------------------------------------------------------------
 
-type Rect struct {
-	X1, Y1, X2, Y2 int
+// computeFOV returns a 2-D boolean grid of which tiles are visible from
+// (originX, originY) within radius tiles, respecting BlockSight walls.
+func computeFOV(m Map, originX, originY, radius int) [][]bool {
+	visible := make([][]bool, MapWidth)
+	for x := range visible {
+		visible[x] = make([]bool, MapHeight)
+	}
+
+	// Cast rays at many angles
+	steps := 360 * 4 // fine enough for a grid
+	for i := 0; i < steps; i++ {
+		angle := float64(i) * math.Pi * 2 / float64(steps)
+		dx := math.Cos(angle)
+		dy := math.Sin(angle)
+
+		rx, ry := float64(originX)+0.5, float64(originY)+0.5
+		for dist := 0; dist < radius; dist++ {
+			x, y := int(rx), int(ry)
+			if x < 0 || x >= MapWidth || y < 0 || y >= MapHeight {
+				break
+			}
+			visible[x][y] = true
+			if m[x][y].BlockSight {
+				break // wall — stop this ray but mark the wall visible
+			}
+			rx += dx
+			ry += dy
+		}
+	}
+	return visible
 }
 
-func NewRect(x, y, w, h int) Rect {
-	return Rect{x, y, x + w, y + h}
+// -----------------------------------------------------------------------
+// Rect
+// -----------------------------------------------------------------------
+
+type Rect struct{ X1, Y1, X2, Y2 int }
+
+func NewRect(x, y, w, h int) Rect { return Rect{x, y, x + w, y + h} }
+
+func (r Rect) Center() (int, int) { return (r.X1 + r.X2) / 2, (r.Y1 + r.Y2) / 2 }
+
+func (r Rect) Intersects(o Rect) bool {
+	return r.X1 <= o.X2 && r.X2 >= o.X1 && r.Y1 <= o.Y2 && r.Y2 >= o.Y1
 }
 
-func (r Rect) Center() (int, int) {
-	return (r.X1 + r.X2) / 2, (r.Y1 + r.Y2) / 2
-}
-
-func (r Rect) Intersects(other Rect) bool {
-	return r.X1 <= other.X2 && r.X2 >= other.X1 &&
-		r.Y1 <= other.Y2 && r.Y2 >= other.Y1
-}
-
+// -----------------------------------------------------------------------
 // Map
+// -----------------------------------------------------------------------
 
 type Map [][]Tile
 
-// createRoom carves out a room by setting its interior tiles to empty.
 func createRoom(room Rect, m Map) {
 	for x := room.X1 + 1; x < room.X2; x++ {
 		for y := room.Y1 + 1; y < room.Y2; y++ {
@@ -88,10 +129,7 @@ func createVTunnel(y1, y2, x int, m Map) {
 	}
 }
 
-// makeMap builds a procedurally generated dungeon.
-// It positions the player at the centre of the first room.
 func makeMap(player *Object) Map {
-	// Start with a solid wall everywhere
 	m := make(Map, MapWidth)
 	for x := range m {
 		m[x] = make([]Tile, MapHeight)
@@ -101,7 +139,6 @@ func makeMap(player *Object) Map {
 	}
 
 	var rooms []Rect
-
 	for i := 0; i < MaxRooms; i++ {
 		w := RoomMinSize + rand.Intn(RoomMaxSize-RoomMinSize+1)
 		h := RoomMinSize + rand.Intn(RoomMaxSize-RoomMinSize+1)
@@ -109,8 +146,6 @@ func makeMap(player *Object) Map {
 		y := rand.Intn(MapHeight - h - 1)
 
 		newRoom := NewRect(x, y, w, h)
-
-		// Reject the room if it overlaps any existing room
 		overlaps := false
 		for _, other := range rooms {
 			if newRoom.Intersects(other) {
@@ -122,15 +157,12 @@ func makeMap(player *Object) Map {
 			continue
 		}
 
-		// Carve the room into the map
 		createRoom(newRoom, m)
 		cx, cy := newRoom.Center()
 
 		if len(rooms) == 0 {
-			// First room — place the player here
 			player.X, player.Y = cx, cy
 		} else {
-			// Connect this room to the previous one with tunnels
 			prevCX, prevCY := rooms[len(rooms)-1].Center()
 			if rand.Intn(2) == 0 {
 				createHTunnel(prevCX, cx, prevCY, m)
@@ -140,20 +172,22 @@ func makeMap(player *Object) Map {
 				createHTunnel(prevCX, cx, cy, m)
 			}
 		}
-
 		rooms = append(rooms, newRoom)
 	}
-
 	return m
 }
 
+// -----------------------------------------------------------------------
 // Game
+// -----------------------------------------------------------------------
 
 type Game struct {
 	Map Map
 }
 
+// -----------------------------------------------------------------------
 // Object
+// -----------------------------------------------------------------------
 
 type Object struct {
 	X, Y  int
@@ -181,7 +215,9 @@ func (o *Object) Draw(screen tcell.Screen) {
 	screen.SetContent(o.X, o.Y, o.Char, nil, style)
 }
 
+// -----------------------------------------------------------------------
 // Input
+// -----------------------------------------------------------------------
 
 func handleKeys(ev *tcell.EventKey, game *Game, player *Object) bool {
 	switch ev.Key() {
@@ -199,27 +235,50 @@ func handleKeys(ev *tcell.EventKey, game *Game, player *Object) bool {
 	return false
 }
 
- 
+// -----------------------------------------------------------------------
 // Rendering
+// -----------------------------------------------------------------------
 
-func renderAll(screen tcell.Screen, game *Game, objects []*Object) {
+func renderAll(screen tcell.Screen, game *Game, objects []*Object, visible [][]bool) {
 	for x := 0; x < MapWidth; x++ {
 		for y := 0; y < MapHeight; y++ {
+			isVisible := visible[x][y]
+			isWall := game.Map[x][y].BlockSight
+
+			if isVisible {
+				game.Map[x][y].Explored = true
+			}
+
+			if !game.Map[x][y].Explored {
+				continue // still in the dark — don't draw at all
+			}
+
 			var bg tcell.Color
-			if game.Map[x][y].BlockSight {
+			switch {
+			case isVisible && isWall:
+				bg = colorLightWall
+			case isVisible && !isWall:
+				bg = colorLightGround
+			case !isVisible && isWall:
 				bg = colorDarkWall
-			} else {
+			default:
 				bg = colorDarkGround
 			}
 			screen.SetContent(x, y, ' ', nil, tcell.StyleDefault.Background(bg))
 		}
 	}
+
+	// Only draw objects the player can currently see
 	for _, obj := range objects {
-		obj.Draw(screen)
+		if visible[obj.X][obj.Y] {
+			obj.Draw(screen)
+		}
 	}
 }
 
+// -----------------------------------------------------------------------
 // Main
+// -----------------------------------------------------------------------
 
 func main() {
 	screen, err := tcell.NewScreen()
@@ -231,15 +290,17 @@ func main() {
 	}
 	defer screen.Fini()
 
-	// Player starts at (0,0) — makeMap will move them to the first room
 	player := NewObject(0, 0, '@', tcell.ColorWhite)
 	objects := []*Object{player}
-
 	game := &Game{Map: makeMap(player)}
+
+	// Compute initial FOV
+	visible := computeFOV(game.Map, player.X, player.Y, TorchRadius)
+	prevX, prevY := player.X, player.Y
 
 	for {
 		screen.Clear()
-		renderAll(screen, game, objects)
+		renderAll(screen, game, objects, visible)
 		screen.Show()
 
 		ev := screen.PollEvent()
@@ -247,6 +308,11 @@ func main() {
 		case *tcell.EventKey:
 			if handleKeys(e, game, player) {
 				return
+			}
+			// Recompute FOV only when the player actually moved
+			if player.X != prevX || player.Y != prevY {
+				visible = computeFOV(game.Map, player.X, player.Y, TorchRadius)
+				prevX, prevY = player.X, player.Y
 			}
 		case *tcell.EventResize:
 			screen.Sync()
